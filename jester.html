@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+    <head>
+        <title>JeSter - The JS Tester</title>
+        <!-- TODO: Add a favicon? -->
+
+        <style type="text/css">
+.error {
+    color: #ff0000;
+    border: 1px solid #000000;
+    margin-top: 1em;
+    padding: 0.5em;
+}
+
+.testFileDiv {
+    border: 1px solid #000000;
+    margin-top: 1em;
+    padding: 0.5em;
+}
+
+.testDiv, .messages, .result { margin-left: 2em; }
+
+.title, .result { display: inline; }
+
+.pass { color: #00ff00; }
+.fail { color: #ff0000; }
+.working { color: #ffff00; }
+        </style>
+
+        <script type="text/javascript">
+/*jslint browser: true */
+
+(function () {
+    "use strict";
+
+    /**
+     * The prototype for the test objects passed to the unit test functions.
+     */
+    function newTestObject() {
+        var unstubable = [
+                "document.body",
+                "document"
+            ],
+            stubbed = {},
+            count = 0;
+
+        /**
+         * Returns a new stub object.
+         *
+         * The stub object is callable and returns the stub object's "ret" property when called.
+         *
+         * When called with new, calls a function set with the object's "inst" method. "this" in the function is set to the new object.
+         */
+        function getStub() {
+            var out,
+                inst;
+
+            out = function () {
+                out.calls.push(arguments);
+                if (inst !== undefined) {
+                    inst.apply(this);
+                }
+                return out.ret;
+            };
+
+            out.calls = [];
+
+            out.inst = function (f) {
+                inst = f;
+            };
+
+            out.isstub = true;
+
+            out.id = count;
+
+            count += 1;
+
+            return out;
+        }
+
+        return {
+            /**
+             * Just indicates that this object is a stub.
+             */
+            "isstub": true,
+
+            /**
+             * This structure holds the failure/error messages produced by test functions.
+             */
+            "errors": [],
+
+            /**
+             * The method test functions call when a test fails.
+             *
+             * msg
+             *     The failure message.
+             */
+            "fail": function (msg) {
+                this.errors.push(msg);
+            },
+
+            /**
+             * Replaces (by monkeypatching) or creates the named object with a fake object.
+             *
+             * name
+             *     Optional. The name of the object to stub. If not specified, does not stub but rather just returns a stub object.
+             * obj
+             *     Optional. The object with which to replace the given name.
+             */
+            "stub": function (name, obj) {
+                var sname,
+                    pname = null,
+                    node = window,
+                    i,
+                    j;
+                if (obj === undefined) {
+                    obj = getStub();
+                }
+                if (name === undefined) {
+                    return obj;
+                }
+                while (name.indexOf("window.") === 0) {
+                    name = name.substr("window".length + 1);
+                }
+                for (i = 0; i < unstubable.length; i += 1) {
+                    if (name.indexOf(unstubable[i] + ".") === 0) {
+                        pname = unstubable[i];
+                        name = name.substr(unstubable[i].length + 1);
+                        sname = pname.split(".");
+                        for (j = 0; j < sname.length; j += 1) {
+                            node = node[sname[j]];
+                        }
+                        break;
+                    }
+                }
+                sname = name.split(".");
+                stubbed[(pname === null ? sname[0] : pname + "." + sname[0])] = node[sname[0]];
+                while (sname.length > 1) {
+                    pname = (pname === null ? sname[0] : pname + "." + sname[0]);
+                    if (node[sname[0]] === undefined || !node[sname[0]].isstub) {
+                        node[sname[0]] = getStub();
+                    }
+                    node = node[sname[0]];
+                    sname = sname.slice(1);
+                }
+                node[sname[0]] = obj;
+                if (node === window) {
+                    node = null;
+                }
+                return node;
+            },
+
+            /**
+             * Reverses all stub operations done on this test object.
+             */
+            "unstub": function () {
+                var root,
+                    k,
+                    sk;
+                for (k in stubbed) {
+                    if (stubbed.hasOwnProperty(k)) {
+                        sk = k.split(".");
+                        root = window;
+                        while (sk.length > 1) {
+                            root = root[sk[0]];
+                            sk = sk.slice(1);
+                        }
+                        root[sk[0]] = stubbed[k];
+                    }
+                }
+            }
+        };
+    }
+
+    /**
+     * The xmlhttp object. Used for importing JavaScript files such as the config, the JavaScript test files, the files containing the code to be tested, and all util JavaScript files.
+     */
+    var xmlhttp = new XMLHttpRequest();
+
+    /**
+     * A function for "importing" JavaScript given an URL.
+     *
+     * url
+     *     The url of the script to import.
+     * funcname
+     *     The name of a function the imported script will call with an argument. This argument will be returned.
+     */
+    function importScript(url, funcname) {
+        var out;
+
+        xmlhttp.open("GET", url, false);
+        xmlhttp.send();
+
+        if (funcname !== undefined) {
+            window[funcname] = function (a) {
+                out = a;
+            };
+        }
+
+        eval.call(window, xmlhttp.responseText);
+
+        if (funcname !== undefined) {
+            delete window[funcname];
+            return out;
+        }
+    }
+
+    /**
+     * A simple global variable for holding all query parameters. Initialized lazily.
+     */
+    var queryParameters = null;
+    /**
+     * A function for retrieving query string parameters.
+     *
+     * name
+     *     The name of the parameter for which to retrieve a value.
+     * def
+     *     If no query parameter with the given name is specified, the default value to return.
+     *
+     * returns the value of the query parameter requested.
+     */
+    function getParameter(name, def) {
+        var search, qsstr, i, p, s, out;
+        if (queryParameters === null) {
+            queryParameters = {};
+            qsstr = document.location.search.substring(1);
+            if (qsstr === "") {
+                return def;
+            }
+            search = qsstr.split("&");
+            for (i = 0; i < search.length; i += 1) {
+                p = search[i];
+                if (p !== "") {
+                    s = p.split("=", 2);
+                    if (s.length === 1) {
+                        continue;
+                    }
+                    queryParameters[s[0]] = decodeURIComponent(s[1].replace(/\+/g, " "));
+                }
+            }
+        }
+
+        out = queryParameters[name];
+
+        if (out === undefined) {
+            return def;
+        }
+
+        return out;
+    }
+
+    /**
+     * Creates a new div with the given class name. Does not attach said div anywhere.
+     *
+     * cls
+     *     The class name to apply to the div.
+     *
+     * returns the div created.
+     */
+    function createDivWithClass(cls) {
+        var div = document.createElement("div");
+        div.className = cls;
+        return div;
+    }
+
+    /**
+     * Creates the div containing the results of a test file and appends it to the mainContent div.
+     *
+     * name
+     *     The name of the test file.
+     *
+     * returns the div created.
+     */
+    function createTestFileDiv(name) {
+        var div = createDivWithClass("testFileDiv"),
+            titleDiv = createDivWithClass("testFileTitle title"),
+            resultDiv = createDivWithClass("testFileResult result"),
+            testsDiv = createDivWithClass("testsDiv");
+        titleDiv.appendChild(document.createTextNode(name));
+        div.appendChild(titleDiv);
+        div.appendChild(resultDiv);
+        div.appendChild(testsDiv);
+        document.getElementById("mainContent").appendChild(div);
+        return div;
+    }
+
+    /**
+     * Creates the div containing the results of a single test.
+     *
+     * name
+     *     The name of the test.
+     * testFileDiv
+     *     The test file div under which to create the new test div.
+     *
+     * returns the div created.
+     */
+    function createTestDiv(name, testFileDiv) {
+        var div = createDivWithClass("testDiv"),
+            testTitleDiv = createDivWithClass("testTitleDiv title"),
+            testResultDiv = createDivWithClass("testResult result");
+        testTitleDiv.appendChild(document.createTextNode(name));
+        div.appendChild(testTitleDiv);
+        div.appendChild(testResultDiv);
+        testFileDiv.getElementsByClassName("testsDiv")[0].appendChild(div);
+        return div;
+    }
+
+    /**
+     * Populates a result div with the word "pass", "fail", or "working" as applicable and sets the class.
+     *
+     * div
+     *     The result div.
+     * status
+     *     Optional. "pass", "fail", or "working". If not specified, defaults to "working".
+     */
+    function setResultDiv(div, status) {
+        if (status === undefined) {
+            status = "working";
+        }
+        while (div.childNodes.length > 0) {
+            div.removeChild(div.childNodes[0]);
+        }
+        div.className = "testResult result " + status;
+        div.appendChild(document.createTextNode(status));
+    }
+
+    /**
+     * Creates the div containing error messages.
+     *
+     * testDiv
+     *     The test div in which to place the error messages div.
+     * messages
+     *     The messages to place in the error message div.
+     *
+     * returns the div created.
+     */
+    function createMessagesDiv(testDiv, messages) {
+        var div = createDivWithClass("messages"), i, msgDiv;
+        for (i = 0; i < messages.length; i += 1) {
+            msgDiv = createDivWithClass("message");
+            msgDiv.appendChild(document.createTextNode(messages[i]));
+            div.appendChild(msgDiv);
+        }
+        testDiv.appendChild(div);
+        return div;
+    }
+
+    /**
+     * Displays an error message not associated with any particular test or file.
+     *
+     * message
+     *     The error message to display.
+     */
+    function pageLevelError(message) {
+        var div = createDivWithClass("error");
+        div.appendChild(document.createTextNode("Error: " + message));
+        document.getElementById("mainContent").appendChild(div);
+    }
+
+    /**
+     * Called when all resources (excepting those loaded dynamically via
+     * JavaScript) on the page have loaded.
+     */
+    function documentReady() {
+        var configFile = getParameter("config", "jester_config.js"),
+            config,
+            currentTestSet,
+            i,
+            testFile,
+            testFileDiv,
+            fileSuccess,
+            j,
+            test,
+            testDiv,
+            k,
+            testSuccess,
+            testFileResultsDiv,
+            testResultsDiv,
+            testobj,
+            files;
+
+        // Import the configuration file.
+        config = importScript(configFile, "registerConfig");
+
+        // Construct the list of files to test.
+        files = getParameter("files");
+        if (files === undefined) {
+            files = config.testFiles; // JSLint complains about undefined 'config' variable.
+        } else {
+            files = files.split(",");
+            for (i = 0; i < files.length; i += 1) {
+                if (config.testFiles.indexOf(files[i]) === -1) {
+                    pageLevelError("Some parameter-specified files not found.");
+                    return;
+                }
+            }
+        }
+
+        // Iterate over all files in the config file.
+        for (i = 0; i < files.length; i += 1) {
+            testFile = config.testBase + files[i];
+            testFileDiv = createTestFileDiv(files[i]);
+            testFileResultsDiv = testFileDiv.getElementsByClassName("testFileResult")[0];
+            setResultDiv(testFileResultsDiv, "working");
+            fileSuccess = true;
+            currentTestSet = importScript(testFile, "registerTests");
+            // Iterate over the tests in the file.
+            for (j = 0; j < currentTestSet.tests.length; j += 1) {
+                test = currentTestSet.tests[j];
+                testDiv = createTestDiv(test.name, testFileDiv);
+                testResultsDiv = testDiv.getElementsByClassName("testResult")[0];
+                setResultDiv(testResultsDiv, "working");
+                testobj = newTestObject();
+                if (currentTestSet.setup !== undefined) {
+                    currentTestSet.setup(testobj);
+                }
+                if (test.setup !== undefined) {
+                    test.setup(testobj);
+                }
+                // Iterate over the files to test.
+                if (test.files !== undefined) {
+                    for (k = 0; k < test.files.length; k += 1) {
+                        importScript(config.jsBase + test.files[k]);
+                    }
+                }
+                test.func(testobj);
+                testobj.unstub();
+                testSuccess = (testobj.errors.length === 0);
+                setResultDiv(testResultsDiv, (testSuccess ? "pass" : "fail"));
+                fileSuccess = fileSuccess && testSuccess;
+
+                if (!testSuccess) {
+                    createMessagesDiv(testDiv, testobj.errors);
+                }
+            }
+            setResultDiv(testFileResultsDiv, (fileSuccess ? "pass" : "fail"));
+        }
+    }
+    /**
+     * The following block of code causes the function documentReady to trigger
+     * when all resources on the page have loaded (other than those loaded
+     * dynamically.)
+     */
+    function onloadAel() {
+        window.document.removeEventListener("DOMContentLoaded", onloadAel, false);
+        documentReady();
+    }
+    function onloadSt() {
+        try {
+            window.document.documentElement.doScroll("left");
+        } catch (error) {
+            setTimeout(onloadSt, 10);
+            return;
+        }
+        documentReady();
+    }
+    if (window.document.addEventListener) {
+        window.document.addEventListener("DOMContentLoaded", onloadAel);
+    } else if (window.document.attachEvent) {
+        onloadSt();
+    }
+}());
+        </script>
+    </head>
+    <body>
+        <h1>JeSter - The JS Tester</h1>
+        <div id="mainContent"></div>
+    </body>
+</html>
