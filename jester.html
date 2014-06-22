@@ -385,7 +385,7 @@
         // Construct the list of files to test.
         files = getParameter("files");
         if (files === undefined) {
-            files = config.testFiles; // JSLint complains about undefined 'config' variable.
+            files = config.testFiles;
         } else {
             files = files.split(",");
             for (i = 0; i < files.length; i += 1) {
